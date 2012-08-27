@@ -30,12 +30,19 @@
 #include <vtkMRMLDiffusionWeightedVolumeNode.h>
 #include <vtkMRMLVectorVolumeNode.h>
 #include <vtkMRMLLinearTransformNode.h>
+#include <vtkMRMLVolumeNode.h>
+#include <vtkMRMLAnnotationROINode.h>
 
 // VTK includes
 #include <vtkImageData.h>
+#include <vtkImageClip.h>
+#include <vtkNew.h>
+#include <vtkMatrix4x4.h>
+#include <vtkSmartPointer.h>
 
 // STD includes
 #include <cassert>
+#include <iostream>
 
 //----------------------------------------------------------------------------
 class vtkSlicerCropVolumeLogic::vtkInternal
@@ -281,6 +288,99 @@ int vtkSlicerCropVolumeLogic::Apply(vtkMRMLCropVolumeParametersNode* pnode)
   pnode->SetOutputVolumeNodeID(outputVolume->GetID());
 
   return 0;
+}
+
+
+//----------------------------------------------------------------------------
+void vtkSlicerCropVolumeLogic::CropVoxelBased(vtkMRMLAnnotationROINode* roi, vtkMRMLVolumeNode* inputVolume, vtkMRMLVolumeNode* outputVolume)
+{
+  if(!roi || !inputVolume || !outputVolume)
+    return;
+
+  vtkNew<vtkImageData> imageDataWorkingCopy;
+  imageDataWorkingCopy->DeepCopy(inputVolume->GetImageData());
+
+  vtkNew<vtkMatrix4x4> inputRASToIJK;
+  inputVolume->GetRASToIJKMatrix(inputRASToIJK.GetPointer());
+
+  vtkNew<vtkMatrix4x4> inputIJKToRAS;
+  inputVolume->GetIJKToRASMatrix(inputIJKToRAS.GetPointer());
+
+  double roiXYZ[3];
+  double roiRadius[3];
+
+  roi->GetXYZ(roiXYZ);
+  roi->GetRadiusXYZ(roiRadius);
+
+  std::cout << "ROI XYZ: X="<<roiXYZ[0]<<" Y="<<roiXYZ[1]<<" Z="<<roiXYZ[2] << std::endl;
+  std::cout << "RADIUS XYZ: X="<<roiRadius[0]<<" Y="<<roiRadius[1]<<" Z="<<roiRadius[2] << std::endl;
+
+  double minXYZRAS[] = {roiXYZ[0]-roiRadius[0], roiXYZ[1]-roiRadius[1],roiXYZ[2]-roiRadius[2],1.};
+  double maxXYZRAS[] = {roiXYZ[0]+roiRadius[0], roiXYZ[1]+roiRadius[1],roiXYZ[2]+roiRadius[2],1.};
+
+  std::cout << "MinCorner in RAS: X="<<minXYZRAS[0]<<" Y="<<minXYZRAS[1]<<" Z="<<minXYZRAS[2] << std::endl;
+  std::cout << "MaxCorner in RAS: X="<<maxXYZRAS[0]<<" Y="<<maxXYZRAS[1]<<" Z="<<maxXYZRAS[2] << std::endl;
+
+  double minXYZIJK[4], maxXYZIJK[4];
+
+  //transform to ijk
+  inputRASToIJK->MultiplyPoint(minXYZRAS, minXYZIJK);
+  inputRASToIJK->MultiplyPoint(maxXYZRAS, maxXYZIJK);
+
+  std::cout << "MinCorner in IJK: X="<<minXYZIJK[0]<<" Y="<<minXYZIJK[1]<<" Z="<<minXYZIJK[2] << std::endl;
+  std::cout << "MaxCorner in IJK: X="<<maxXYZIJK[0]<<" Y="<<maxXYZIJK[1]<<" Z="<<maxXYZIJK[2] << std::endl;
+
+  int outputWholeExtent[6] = {std::min(minXYZIJK[0]+0.5,maxXYZIJK[0]+0.5),std::max(minXYZIJK[0]+0.5,maxXYZIJK[0]+0.5),std::min(minXYZIJK[1]+0.5,maxXYZIJK[1]+0.5),std::max(minXYZIJK[1]+0.5,maxXYZIJK[1]+0.5),std::min(minXYZIJK[2]+0.5,maxXYZIJK[2]+0.5),std::max(minXYZIJK[2]+0.5,maxXYZIJK[2]+0.5)};
+
+  std::cout << "Whole Extent X values: Xmin="<<outputWholeExtent[0]<<" Xmax="<<outputWholeExtent[1]<< std::endl;
+  std::cout << "Whole Extent Y values: Ymin="<<outputWholeExtent[2]<<" Ymax="<<outputWholeExtent[3]<< std::endl;
+  std::cout << "Whole Extent Z values: Zmin="<<outputWholeExtent[4]<<" Zmax="<<outputWholeExtent[5]<< std::endl;
+
+
+  double ijkNewOrigin[] = {outputWholeExtent[0],outputWholeExtent[2],outputWholeExtent[4],1.0};
+  double  rasNewOrigin[4];
+  inputIJKToRAS->MultiplyPoint(ijkNewOrigin,rasNewOrigin);
+
+  vtkNew<vtkImageClip> imageClip;
+  imageClip->SetInput(imageDataWorkingCopy.GetPointer());
+  imageClip->SetOutputWholeExtent(outputWholeExtent);
+  imageClip->SetClipData(true);
+
+  imageClip->Update();
+
+  vtkNew<vtkMatrix4x4> outputIJKToRAS;
+  outputIJKToRAS->DeepCopy(inputIJKToRAS.GetPointer());
+
+  outputIJKToRAS->SetElement(0,3,rasNewOrigin[0]);
+  outputIJKToRAS->SetElement(1,3,rasNewOrigin[1]);
+  outputIJKToRAS->SetElement(2,3,rasNewOrigin[2]);
+
+  outputVolume->SetOrigin(rasNewOrigin[0],rasNewOrigin[1],rasNewOrigin[2]);
+
+
+ // const char* scanOrder = vtkMRMLVolumeNode::ComputeScanOrderFromIJKToRAS(inputIJKToRAS.GetPointer());
+ // bool computeIJKToRAS = vtkMRMLVolumeNode::ComputeIJKToRASFromScanOrder(scanOrder,inputVolume->GetSpacing(),imageClip->GetOutput()->GetDimensions(),false,outputIJKToRAS.GetPointer());
+
+
+  vtkNew<vtkMatrix4x4> outputRASToIJK;
+  outputRASToIJK->DeepCopy(outputIJKToRAS.GetPointer());
+  outputRASToIJK->Invert();
+
+  vtkNew<vtkImageData> outputImageData;
+  outputImageData->DeepCopy(imageClip->GetOutput());
+
+  int extent[6];
+  imageClip->GetOutput()->GetExtent(extent);
+
+  outputImageData->SetExtent(0, extent[1]-extent[0]-1, 0, extent[3]-extent[2]-1, 0, extent[5]-extent[4]-1);
+
+  outputVolume->SetAndObserveImageData(outputImageData.GetPointer());
+
+  outputVolume->SetIJKToRASMatrix(outputIJKToRAS.GetPointer());
+  outputVolume->SetRASToIJKMatrix(outputRASToIJK.GetPointer());
+
+  outputVolume->Modified();
+
 }
 
 //----------------------------------------------------------------------------

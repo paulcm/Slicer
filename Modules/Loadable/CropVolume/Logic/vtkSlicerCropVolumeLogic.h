@@ -25,6 +25,8 @@
 #include "vtkSlicerModuleLogic.h"
 class vtkSlicerCLIModuleLogic;
 class vtkSlicerVolumesLogic;
+class vtkMRMLVolumeNode;
+class vtkMRMLAnnotationROINode;
 
 // CropVolumes includes
 #include "vtkSlicerCropVolumeModuleLogicExport.h"
@@ -47,6 +49,8 @@ public:
   vtkSlicerCLIModuleLogic* GetResampleLogic();
 
   int Apply(vtkMRMLCropVolumeParametersNode*);
+
+  void CropVoxelBased(vtkMRMLAnnotationROINode* roi, vtkMRMLVolumeNode* inputVolume, vtkMRMLVolumeNode* outputNode);
 
   virtual void RegisterNodes();
 
